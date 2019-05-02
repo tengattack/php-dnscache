@@ -66,5 +66,6 @@ ZEND_GET_MODULE(dnscache)
 // this function will be made available to PHP
 // and prints to PHP stdout using printf
 PHP_FUNCTION(dnscache_clear) {
-    php_printf("Hello World! (from our extension)\n");
+    // TODO: clear dnscache
+    php_printf("TODO: clear dnscache\n");
 }

@@ -25,7 +25,7 @@
 
 #include "inject.h"
 
-#include "C-LRU-Cache/lruc.h"
+#include "lruc.h"
 #include "subhook/subhook.h"
 
 struct gethostbyname_data {
@@ -57,24 +57,14 @@ static int looks_like_numeric_ipv6(const char *node)
 	}
 }
 
-#define CACHE_SIZE  (8 * 1024)  // 8k
-#define AVG_SIZE    (2 * 1024)  // 2k
+#define CACHE_SIZE  (512)                  // 512
+#define AVG_SIZE    (sizeof(in_addr_t))    // 4
 
 lruc *cache = NULL;
-int64_t *origFunc = NULL;
 
 void proxy_freeaddrinfo(struct addrinfo *res) {
 	//PFUNC();
 	free(res);
-}
-
-int hookReplacementFunction() {
-    printf("Calling replacement function!\n");
-    typedef int (*orig_rand_f_type)();
-    static orig_rand_f_type orig_rand = NULL;
-    if (!orig_rand)
-        orig_rand = (orig_rand_f_type)dlsym(RTLD_NEXT,"rand");
-    return orig_rand();
 }
 
 static void gethostbyname_data_setstring(struct gethostbyname_data* data, char* name) {
@@ -130,7 +120,7 @@ static struct gethostbyname_data ghbndata;
 /*
  * Overrides real gethostbyname
  * */
-struct hostent *gethostbyname(const char *name) {
+/*struct hostent *gethostbyname(const char *name) {
     printf("gethostbyname: %s\n", name);
 	//return proxy_gethostbyname(name, &ghbndata);
         // Load real gethostbyname function
@@ -140,7 +130,7 @@ struct hostent *gethostbyname(const char *name) {
 
     struct hostent *ret = gethostbyname_real(name);
     return ret;
-}
+}*/
 
 
 /*
@@ -164,7 +154,6 @@ struct hostent *gethostbyname2(const char *name, int af)
 /*
  * Overrides real gethostbyaddr_r
  */
-
 int
 gethostbyname_r(const char *name,
 		struct hostent *ret, char *buf, size_t buflen,
@@ -235,7 +224,7 @@ int proxy_getaddrinfo(const char *node, const char *service, const struct addrin
 	int port, af = AF_INET;
 	//PFUNC();
 
-        printf("proxy_getaddrinfo node %s service %s\n",node,service);
+        //printf("proxy_getaddrinfo node %s service %s\n",node,service);
 	space = calloc(1, sizeof(struct addrinfo_data));
 	if(!space) goto err1;
 
@@ -246,25 +235,25 @@ int proxy_getaddrinfo(const char *node, const char *service, const struct addrin
 			free(space);
 			return EAI_NONAME;
 		}
-		struct addrinfo_data *space_cache;
+		in_addr_t *addr_list_cache;
 		int key_len = strlen(node);
-                if(err = lruc_get(cache, (void *)node, key_len, (void **)(&space_cache)))
+                if(err = lruc_get(cache, (void *)node, key_len, (void **)(&addr_list_cache)))
 			goto err2;
-                if (space_cache) {
-		        printf("proxy_getaddrinfo lru cached\n");
-			memcpy(space, space_cache, sizeof(struct addrinfo_data));
+                if (addr_list_cache) {
+			memcpy(&((struct sockaddr_in *) &space->sockaddr_space)->sin_addr,
+		       		addr_list_cache, sizeof(in_addr_t));
                 } else {
-			//hp = proxy_gethostbyname(node, &ghdata);
+			//hp = my_gethostbyname(node, &ghdata);
 			hp = gethostbyname(node);
 			if(hp) {
 				memcpy(&((struct sockaddr_in *) &space->sockaddr_space)->sin_addr,
 			       		*(hp->h_addr_list), sizeof(in_addr_t));
-                                space_cache = malloc(sizeof(struct addrinfo_data));
+                                addr_list_cache = malloc(sizeof(in_addr_t));
                                 char *node_cache = strdup(node);
-				memcpy(space_cache, space, sizeof(struct addrinfo_data));
-				if (err = lruc_set(cache, node_cache, key_len, space_cache, sizeof(struct addrinfo_data))) {
+				memcpy(addr_list_cache, *(hp->h_addr_list), sizeof(in_addr_t));
+				if (err = lruc_set(cache, node_cache, key_len, addr_list_cache, sizeof(in_addr_t))) {
 					free(node_cache);
-					free(space_cache);
+					free(addr_list_cache);
 					goto err2;
                                 }
                 	}
@@ -319,9 +308,8 @@ subhook_t freeaddrinfo_hook;
 //__attribute__((constructor))
 //static void ctor(void) {
 void dnscache_init() {
-    cache = lruc_new(CACHE_SIZE, AVG_SIZE);
-    //at_init();
-    //patch("gethostbyname", &mygethostbyname);
+    cache = lruc_new(CACHE_SIZE, AVG_SIZE, 10 * 1000); // 10s
+    //patch("gethostbyname", &proxy_gethostbyname);
     //patch("getaddrinfo", &proxy_getaddrinfo);
     //patch("freeaddrinfo", &proxy_freeaddrinfo);
 
