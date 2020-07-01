@@ -109,6 +109,7 @@ lruc_item *lruc_pop_or_create_item(lruc *cache) {
   if(cache->free_items) {
     item = cache->free_items;
     cache->free_items = item->next;
+    item->next = NULL;
   } else {
     item = (lruc_item *) calloc(1, sizeof(lruc_item));
   }
