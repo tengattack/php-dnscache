@@ -45,7 +45,7 @@ struct addrinfo_data {
 	char addr_name[256];
 };
 
-lruc *cache = NULL;
+static lruc *cache = NULL;
 
 static int looks_like_numeric_ipv6(const char *node)
 {
@@ -343,10 +343,15 @@ subhook_t freeaddrinfo_hook;
 void dnscache_init() {
     //#define AVG_SIZE    sizeof(in_addr_t) or sizeof(struct in_addr)   // 4
     //printf("cache_size: %d, avg_size: %d, ttl: %d\n", DNSCACHEG(cache_size), DNSCACHEG(avg_size), DNSCACHEG(ttl));
+    if (cache) {
+        return;
+    }
+
     cache = lruc_new(DNSCACHEG(cache_size), DNSCACHEG(avg_size), DNSCACHEG(ttl));
     if (cache == NULL) {
         perror("Failed to init dnscache");
     }
+
     //patch("getaddrinfo", &proxy_getaddrinfo);
     //patch("freeaddrinfo", &proxy_freeaddrinfo);
 
