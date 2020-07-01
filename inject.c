@@ -266,24 +266,30 @@ int proxy_getaddrinfo(const char *node, const char *service, const struct addrin
 			memcpy(&((struct sockaddr_in *) &space->sockaddr_space)->sin_addr,
 		       		addr, sizeof(struct in_addr));
                 } else {
+			//printf("proxy_getaddrinfo node %s service %s\n", node, service);
 			//hp = gethostbyname(node);
 			//if(hp) {
 			//	memcpy(&((struct sockaddr_in *) &space->sockaddr_space)->sin_addr,
 			//       		*(hp->h_addr_list), sizeof(in_addr_t));
 			//	memcpy(addr_list_cache, *(hp->h_addr_list), sizeof(in_addr_t));
 			addr = malloc(sizeof(struct in_addr));
+			if (!addr) goto err1;
 			err = my_gethostbyname(node, addr);
 			if (!err) {
-				//printf("proxy_getaddrinfo node %s service %s\n", node, service);
 				memcpy(&((struct sockaddr_in *) &space->sockaddr_space)->sin_addr,
 						addr, sizeof(struct in_addr));
                                 char *node_cache = strdup(node);
-				err = lruc_set(cache, node_cache, key_len, addr, sizeof(struct in_addr));
-				if (err) {
-					free(node_cache);
+				if (!node_cache) {
 					free(addr);
 					// PASS
-                                }
+				} else {
+					err = lruc_set(cache, node_cache, key_len, addr, sizeof(struct in_addr));
+					if (err) {
+						free(node_cache);
+						free(addr);
+						// PASS
+                                	}
+				}
                 	} else {
 				free(addr);
 				goto err2;
@@ -369,4 +375,7 @@ void dnscache_deinit() {
     subhook_free(getaddrinfo_hook);
     subhook_remove(freeaddrinfo_hook);
     subhook_free(freeaddrinfo_hook);
+
+    lruc_free(cache);
+    cache = NULL;
 }

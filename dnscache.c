@@ -33,6 +33,8 @@ static PHP_MINIT_FUNCTION(dnscache) {
 static PHP_MSHUTDOWN_FUNCTION(dnscache) {
     UNREGISTER_INI_ENTRIES();
 
+    //dnscache_deinit();
+
     return SUCCESS;
 }
 
