@@ -23,10 +23,14 @@
 #include <stdarg.h>
 #include <assert.h>
 
-#include "inject.h"
+#include <php.h>
+
+#include "dnscache.h"
 
 #include "lruc.h"
 #include "subhook/subhook.h"
+
+#include "inject.h"
 
 struct gethostbyname_data {
 	struct hostent hostent_space;
@@ -40,6 +44,8 @@ struct addrinfo_data {
 	struct sockaddr_storage sockaddr_space;
 	char addr_name[256];
 };
+
+lruc *cache = NULL;
 
 static int looks_like_numeric_ipv6(const char *node)
 {
@@ -57,22 +63,17 @@ static int looks_like_numeric_ipv6(const char *node)
 	}
 }
 
-#define CACHE_SIZE  (512)                  // 512
-#define AVG_SIZE    (sizeof(in_addr_t))    // 4
-
-lruc *cache = NULL;
-
 void proxy_freeaddrinfo(struct addrinfo *res) {
 	//PFUNC();
 	free(res);
 }
 
-static void gethostbyname_data_setstring(struct gethostbyname_data* data, char* name) {
+/*static void gethostbyname_data_setstring(struct gethostbyname_data* data, char* name) {
 	snprintf(data->addr_name, sizeof(data->addr_name), "%s", name);
 	data->hostent_space.h_name = data->addr_name;
 }
 
-/*extern ip_type4 hostsreader_get_numeric_ip_for_name(const char* name);
+extern ip_type4 hostsreader_get_numeric_ip_for_name(const char* name);
 struct hostent *my_gethostbyname(const char *name, struct gethostbyname_data* data) {
 	//PFUNC();
 	char buff[256];
@@ -120,23 +121,22 @@ static struct gethostbyname_data ghbndata;
 /*
  * Overrides real gethostbyname
  * */
-/*struct hostent *gethostbyname(const char *name) {
+struct hostent *proxy_gethostbyname(const char *name) {
     printf("gethostbyname: %s\n", name);
-	//return proxy_gethostbyname(name, &ghbndata);
-        // Load real gethostbyname function
+    // Load real gethostbyname function
     static struct hostent *(*gethostbyname_real) (const char *) = NULL;
     if (!gethostbyname_real)
 	gethostbyname_real = dlsym(RTLD_NEXT, "gethostbyname");
 
     struct hostent *ret = gethostbyname_real(name);
     return ret;
-}*/
+}
 
 
 /*
  * Overrides real gethostbyname2
  * */
-struct hostent *gethostbyname2(const char *name, int af)
+struct hostent *proxy_gethostbyname2(const char *name, int af)
 {
     printf("gethostbyname2: %s\n", name);
     // Load real gethostbyname2 function
@@ -152,10 +152,10 @@ struct hostent *gethostbyname2(const char *name, int af)
 }
 
 /*
- * Overrides real gethostbyaddr_r
+ * Overrides real gethostbyname_r
  */
 int
-gethostbyname_r(const char *name,
+proxy_gethostbyname_r(const char *name,
 		struct hostent *ret, char *buf, size_t buflen,
 		struct hostent **result, int *h_errnop)
 {
@@ -180,7 +180,7 @@ gethostbyname_r(const char *name,
  * Overrides real gethostbyaddr2_r
  */
 int
-gethostbyname2_r(const char *name, int af,
+proxy_gethostbyname2_r(const char *name, int af,
 		 struct hostent *ret, char *buf, size_t buflen,
 		 struct hostent **result, int *h_errnop)
 {
@@ -212,6 +212,29 @@ static int my_inet_aton(const char *node, struct addrinfo_data* space)
 	return ret;
 }
 
+int my_gethostbyname(const char *host, struct in_addr *addr) {
+    struct hostent he, *result;
+    int herr, ret, bufsz = 512;
+    char *buff = NULL;
+    do {
+        char *new_buff = (char *)realloc(buff, bufsz);
+        if (new_buff == NULL) {
+            free(buff);
+            return ENOMEM;
+        }   
+        buff = new_buff;
+        ret = gethostbyname_r(host, &he, buff, bufsz, &result, &herr);
+        bufsz *= 2;
+    } while (ret == ERANGE);
+
+    if (ret == 0 && result != NULL) 
+        *addr = *(struct in_addr *)he.h_addr;
+    else if (result != &he) 
+        ret = herr;
+    free(buff);
+    return ret;
+}
+
 int proxy_getaddrinfo(const char *node, const char *service, const struct addrinfo *hints, struct addrinfo **res) {
 	//struct gethostbyname_data ghdata;
 	struct addrinfo_data *space;
@@ -219,12 +242,13 @@ int proxy_getaddrinfo(const char *node, const char *service, const struct addrin
 	struct hostent *hp = NULL;
 	struct servent se_buf;
 	struct addrinfo *p;
+	struct in_addr *addr = NULL;
 	char buf[1024];
         int err;
 	int port, af = AF_INET;
 	//PFUNC();
 
-        //printf("proxy_getaddrinfo node %s service %s\n",node,service);
+	//printf("proxy_getaddrinfo node %s service %s\n", node, service);
 	space = calloc(1, sizeof(struct addrinfo_data));
 	if(!space) goto err1;
 
@@ -235,33 +259,42 @@ int proxy_getaddrinfo(const char *node, const char *service, const struct addrin
 			free(space);
 			return EAI_NONAME;
 		}
-		in_addr_t *addr_list_cache;
 		int key_len = strlen(node);
-                if(err = lruc_get(cache, (void *)node, key_len, (void **)(&addr_list_cache)))
-			goto err2;
-                if (addr_list_cache) {
+                err = lruc_get(cache, (void *)node, key_len, (void **)(&addr));
+                if (!err && addr) {
+			//printf("proxy_getaddrinfo node %s service %s (cached)\n", node, service);
 			memcpy(&((struct sockaddr_in *) &space->sockaddr_space)->sin_addr,
-		       		addr_list_cache, sizeof(in_addr_t));
+		       		addr, sizeof(struct in_addr));
                 } else {
-			//hp = my_gethostbyname(node, &ghdata);
-			hp = gethostbyname(node);
-			if(hp) {
+			//hp = gethostbyname(node);
+			//if(hp) {
+			//	memcpy(&((struct sockaddr_in *) &space->sockaddr_space)->sin_addr,
+			//       		*(hp->h_addr_list), sizeof(in_addr_t));
+			//	memcpy(addr_list_cache, *(hp->h_addr_list), sizeof(in_addr_t));
+			addr = malloc(sizeof(struct in_addr));
+			err = my_gethostbyname(node, addr);
+			if (!err) {
+				//printf("proxy_getaddrinfo node %s service %s\n", node, service);
 				memcpy(&((struct sockaddr_in *) &space->sockaddr_space)->sin_addr,
-			       		*(hp->h_addr_list), sizeof(in_addr_t));
-                                addr_list_cache = malloc(sizeof(in_addr_t));
+						addr, sizeof(struct in_addr));
                                 char *node_cache = strdup(node);
-				memcpy(addr_list_cache, *(hp->h_addr_list), sizeof(in_addr_t));
-				if (err = lruc_set(cache, node_cache, key_len, addr_list_cache, sizeof(in_addr_t))) {
+				err = lruc_set(cache, node_cache, key_len, addr, sizeof(struct in_addr));
+				if (err) {
 					free(node_cache);
-					free(addr_list_cache);
-					goto err2;
+					free(addr);
+					// PASS
                                 }
-                	}
-			else
+                	} else {
+				free(addr);
 				goto err2;
+			}
                 }
 	} else if(node) {
 		af = ((struct sockaddr_in *) &space->sockaddr_space)->sin_family;
+	} else if(!node && !(hints->ai_flags & AI_PASSIVE)) {
+		af = ((struct sockaddr_in *) &space->sockaddr_space)->sin_family = AF_INET;
+		memcpy(&((struct sockaddr_in *) &space->sockaddr_space)->sin_addr,
+		       (char[]){127,0,0,1}, 4);
 	}
 	if(service) /*my*/getservbyname_r(service, NULL, &se_buf, buf, sizeof(buf), &se);
 
@@ -280,7 +313,7 @@ int proxy_getaddrinfo(const char *node, const char *service, const struct addrin
 	p->ai_canonname = space->addr_name;
 	p->ai_next = NULL;
 	p->ai_family = space->sockaddr_space.ss_family = af;
-	p->ai_addrlen = sizeof(space->sockaddr_space);
+	p->ai_addrlen = af == AF_INET ? sizeof(struct sockaddr_in) : sizeof(struct sockaddr_in6);
 
 	if(hints) {
 		p->ai_socktype = hints->ai_socktype;
@@ -308,8 +341,12 @@ subhook_t freeaddrinfo_hook;
 //__attribute__((constructor))
 //static void ctor(void) {
 void dnscache_init() {
-    cache = lruc_new(CACHE_SIZE, AVG_SIZE, 10 * 1000); // 10s
-    //patch("gethostbyname", &proxy_gethostbyname);
+    //#define AVG_SIZE    sizeof(in_addr_t) or sizeof(struct in_addr)   // 4
+    //printf("cache_size: %d, avg_size: %d, ttl: %d\n", DNSCACHEG(cache_size), DNSCACHEG(avg_size), DNSCACHEG(ttl));
+    cache = lruc_new(DNSCACHEG(cache_size), DNSCACHEG(avg_size), DNSCACHEG(ttl));
+    if (cache == NULL) {
+        perror("Failed to init dnscache");
+    }
     //patch("getaddrinfo", &proxy_getaddrinfo);
     //patch("freeaddrinfo", &proxy_freeaddrinfo);
 

@@ -14,8 +14,12 @@ zend_function_entry dnscache_functions[] = {
 };
 
 PHP_INI_BEGIN()
-    STD_PHP_INI_ENTRY("dnscache.cache_size", "", PHP_INI_ALL,
-                      OnUpdateString, cache_size, zend_dnscache_globals, dnscache_globals)
+    STD_PHP_INI_ENTRY("dnscache.cache_size", "2048", PHP_INI_ALL,
+                      OnUpdateLong, cache_size, zend_dnscache_globals, dnscache_globals)
+    STD_PHP_INI_ENTRY("dnscache.avg_size", "4", PHP_INI_ALL,
+                      OnUpdateLong, avg_size, zend_dnscache_globals, dnscache_globals)
+    STD_PHP_INI_ENTRY("dnscache.ttl", "20000", PHP_INI_ALL,
+                      OnUpdateLong, ttl, zend_dnscache_globals, dnscache_globals)
 PHP_INI_END()
 
 static PHP_MINIT_FUNCTION(dnscache) {
@@ -36,7 +40,9 @@ static PHP_GINIT_FUNCTION(dnscache) {
 #if defined(COMPILE_DL_ASTKIT) && defined(ZTS)
     ZEND_TSRMLS_CACHE_UPDATE();
 #endif
-    dnscache_globals->cache_size = NULL;
+    dnscache_globals->cache_size = 0;
+    dnscache_globals->avg_size = 0;
+    dnscache_globals->ttl = 0;
 }
 
 // some pieces of information about our module

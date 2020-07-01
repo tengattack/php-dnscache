@@ -249,6 +249,7 @@ lruc_error lruc_set(lruc *cache, void *key, uint32_t key_length, void *value, ui
     free(item->value);
     item->value = value;
     item->value_length = value_length;
+    item->t = get_tick();
     
   } else {
     // insert a new item
