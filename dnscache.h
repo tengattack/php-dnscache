@@ -5,7 +5,7 @@
 // https://stackoverflow.com/questions/3632160/how-to-make-a-php-extension
 // we define Module constants
 #define PHP_DNSCACHE_EXTNAME "dnscache"
-#define PHP_DNSCACHE_VERSION "0.0.2"
+#define PHP_DNSCACHE_VERSION "0.0.3"
 
 ZEND_BEGIN_MODULE_GLOBALS(dnscache)
     int cache_size;
