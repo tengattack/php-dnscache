@@ -344,16 +344,17 @@ int proxy_getaddrinfo(const char *node, const char *service, const struct addrin
 subhook_t getaddrinfo_hook;
 subhook_t freeaddrinfo_hook;
 
+#define AVG_SIZE    sizeof(struct in_addr)   // or sizeof(in_addr_t) 4
+
 //__attribute__((constructor))
 //static void ctor(void) {
 void dnscache_init() {
-    //#define AVG_SIZE    sizeof(in_addr_t) or sizeof(struct in_addr)   // 4
     //printf("cache_size: %d, avg_size: %d, ttl: %d\n", DNSCACHEG(cache_size), DNSCACHEG(avg_size), DNSCACHEG(ttl));
     if (cache) {
         return;
     }
 
-    cache = lruc_new(DNSCACHEG(cache_size), DNSCACHEG(avg_size), DNSCACHEG(ttl));
+    cache = lruc_new(DNSCACHEG(cache_size), AVG_SIZE, DNSCACHEG(ttl));
     if (cache == NULL) {
         perror("Failed to init dnscache");
     }

@@ -9,7 +9,7 @@
 
 ZEND_BEGIN_MODULE_GLOBALS(dnscache)
     int cache_size;
-    int avg_size;
+    //int avg_size;
     int ttl;
 ZEND_END_MODULE_GLOBALS(dnscache)
 

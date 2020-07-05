@@ -16,8 +16,8 @@ zend_function_entry dnscache_functions[] = {
 PHP_INI_BEGIN()
     STD_PHP_INI_ENTRY("dnscache.cache_size", "2048", PHP_INI_ALL,
                       OnUpdateLong, cache_size, zend_dnscache_globals, dnscache_globals)
-    STD_PHP_INI_ENTRY("dnscache.avg_size", "4", PHP_INI_ALL,
-                      OnUpdateLong, avg_size, zend_dnscache_globals, dnscache_globals)
+    //STD_PHP_INI_ENTRY("dnscache.avg_size", "4", PHP_INI_ALL,
+    //                  OnUpdateLong, avg_size, zend_dnscache_globals, dnscache_globals)
     STD_PHP_INI_ENTRY("dnscache.ttl", "20000", PHP_INI_ALL,
                       OnUpdateLong, ttl, zend_dnscache_globals, dnscache_globals)
 PHP_INI_END()
@@ -33,8 +33,6 @@ static PHP_MINIT_FUNCTION(dnscache) {
 static PHP_MSHUTDOWN_FUNCTION(dnscache) {
     UNREGISTER_INI_ENTRIES();
 
-    //dnscache_deinit();
-
     return SUCCESS;
 }
 
@@ -43,8 +41,12 @@ static PHP_GINIT_FUNCTION(dnscache) {
     ZEND_TSRMLS_CACHE_UPDATE();
 #endif
     dnscache_globals->cache_size = 0;
-    dnscache_globals->avg_size = 0;
+    //dnscache_globals->avg_size = 0;
     dnscache_globals->ttl = 0;
+}
+
+static PHP_GSHUTDOWN_FUNCTION(dnscache) {
+    dnscache_deinit();
 }
 
 // some pieces of information about our module
@@ -60,7 +62,7 @@ zend_module_entry dnscache_module_entry = {
     PHP_DNSCACHE_VERSION,
     PHP_MODULE_GLOBALS(dnscache),
     PHP_GINIT(dnscache),
-    NULL, /* GSHUTDOWN */
+    PHP_GSHUTDOWN(dnscache),
     NULL, /* RPOSTSHUTDOWN */
     STANDARD_MODULE_PROPERTIES_EX
 };
