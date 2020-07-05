@@ -32,6 +32,10 @@
 
 #include "inject.h"
 
+#ifdef USE_CARES
+#include <ares.h>
+#endif
+
 struct gethostbyname_data {
 	struct hostent hostent_space;
 	in_addr_t resolved_addr;
@@ -212,7 +216,94 @@ static int my_inet_aton(const char *node, struct addrinfo_data* space)
 	return ret;
 }
 
+#ifdef USE_CARES
+struct ARES_CALLBACK_DATA {
+    int status;
+    struct in_addr addr;
+};
+
+static void
+callback(void *arg, int status, int timeouts, struct hostent *he)
+{
+    struct ARES_CALLBACK_DATA *cbdata = (struct ARES_CALLBACK_DATA *)arg;
+    cbdata->status = status;
+
+    if (!he || status != ARES_SUCCESS) {
+        return;
+    }
+
+    if (he->h_addrtype != AF_INET) {
+        cbdata->status = ARES_EBADFAMILY;
+        return;
+    }
+
+    memcpy(&cbdata->addr, he->h_addr_list[0], sizeof(struct in_addr));
+}
+
+static void
+wait_ares(ares_channel channel, struct timeval *timeout)
+{
+    struct timeval start_time, now, elapsed, max_tv;
+
+    gettimeofday(&start_time, NULL);
+
+    for (;;) {
+        struct timeval *tvp, ret_tv;
+        fd_set read_fds, write_fds;
+        int nfds;
+
+        FD_ZERO(&read_fds);
+        FD_ZERO(&write_fds);
+        nfds = ares_fds(channel, &read_fds, &write_fds);
+        if (nfds == 0) {
+            break;
+        }
+
+        gettimeofday(&now, NULL);
+        timersub(&now, &start_time, &elapsed);
+        if (timercmp(&elapsed, timeout, >=)) {
+            ares_cancel(channel);
+            break;
+        }
+
+        timersub(timeout, &elapsed, &max_tv);
+
+        tvp = ares_timeout(channel, &max_tv, &ret_tv);
+        select(nfds, &read_fds, &write_fds, NULL, tvp);
+        ares_process(channel, &read_fds, &write_fds);
+    }
+}
+#endif
+
 int my_gethostbyname(const char *host, struct in_addr *addr) {
+#ifdef USE_CARES
+    int status;
+    ares_channel channel;
+    struct ares_options options;
+    struct timeval tv;
+    int optmask = 0;
+    struct ARES_CALLBACK_DATA cbdata = {0};
+
+    tv.tv_sec = 0;
+    tv.tv_usec = DNSCACHEG(dns_timeout) * 1000;
+    options.timeout = tv.tv_sec * 1000 + tv.tv_usec / 1000;
+    optmask |= ARES_OPT_TIMEOUTMS | ARES_OPT_ROTATE;
+
+    status = ares_init_options(&channel, &options, optmask);
+    if (status != ARES_SUCCESS) {
+        return 1;
+    }
+    ares_gethostbyname(channel, host, AF_INET, callback, &cbdata);
+    //ares_gethostbyname(channel, host, AF_INET6, callback, NULL);
+    wait_ares(channel, &tv);
+    ares_destroy(channel);
+
+    if (cbdata.status != ARES_SUCCESS) {                                         
+        return 1;                                                         
+    }
+    memcpy(addr, &cbdata.addr, sizeof(struct in_addr));
+    return 0;
+#else
     struct hostent he, *result;
     int herr, ret, bufsz = 512;
     char *buff = NULL;
@@ -227,12 +318,13 @@ int my_gethostbyname(const char *host, struct in_addr *addr) {
         bufsz *= 2;
     } while (ret == ERANGE);
 
-    if (ret == 0 && result != NULL) 
+    if (ret == 0 && result != NULL)
         *addr = *(struct in_addr *)he.h_addr;
-    else if (result != &he) 
+    else if (result != &he)
         ret = herr;
     free(buff);
     return ret;
+#endif
 }
 
 int proxy_getaddrinfo(const char *node, const char *service, const struct addrinfo *hints, struct addrinfo **res) {
