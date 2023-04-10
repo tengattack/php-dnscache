@@ -6,10 +6,14 @@
 
 ZEND_DECLARE_MODULE_GLOBALS(dnscache);
 
-// register our function to the PHP API 
+// Declare argument info structures
+ZEND_BEGIN_ARG_INFO_EX(arginfo_void, 0, 0, 0)
+ZEND_END_ARG_INFO()
+
+// register our function to the PHP API
 // so that PHP knows, which functions are in this module
 zend_function_entry dnscache_functions[] = {
-    PHP_FE(dnscache_clear, NULL)
+    PHP_FE(dnscache_clear, arginfo_void)
     {NULL, NULL, NULL}
 };
 
@@ -76,6 +80,9 @@ ZEND_GET_MODULE(dnscache)
 // this function will be made available to PHP
 // and prints to PHP stdout using printf
 PHP_FUNCTION(dnscache_clear) {
+    if (zend_parse_parameters_none() == FAILURE) {
+        return;
+    }
     // TODO: clear dnscache
     php_printf("TODO: clear dnscache\n");
 }
