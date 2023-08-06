@@ -23,6 +23,8 @@
 #include <stdarg.h>
 #include <assert.h>
 
+#include <ares.h>
+
 #include <php.h>
 
 #include "dnscache.h"
@@ -44,6 +46,18 @@ struct addrinfo_data {
 	struct sockaddr_storage sockaddr_space;
 	char addr_name[256];
 };
+
+struct ares_ctx {
+	int status;
+	struct in_addr *addr;
+};
+
+#define ARES_STATUS_RET_MASK 0xffff
+
+#define ARES_STATUS_SET_RET(ctx, ret) (ctx)->status |= (ret & ARES_STATUS_RET_MASK);
+#define ARES_STATUS_GET_RET(ctx) ((ctx)->status & ARES_STATUS_RET_MASK)
+#define ARES_STATUS_SET_COMPLETED(ctx) (ctx)->status |= 1 << 16;
+#define ARES_STATUS_IS_COMPLETED(ctx) ((ctx)->status & (1 << 16))
 
 static lruc *cache = NULL;
 
@@ -104,16 +118,16 @@ struct hostent *my_gethostbyname(const char *name, struct gethostbyname_data* da
 		data->resolved_addr = hdb_res.as_int;
 		goto retname;
 	}
-	
+
 	data->resolved_addr = at_get_ip_for_host((char*) name, strlen(name)).as_int;
 	if(data->resolved_addr == (in_addr_t) ip_type_invalid.addr.v4.as_int) return NULL;
 
 	retname:
 
 	gethostbyname_data_setstring(data, (char*) name);
-	
+
 	//PDEBUG("return hostent space\n");
-	
+
 	return &data->hostent_space;
 }*/
 
@@ -177,7 +191,7 @@ proxy_gethostbyname_r(const char *name,
 }
 
 /*
- * Overrides real gethostbyaddr2_r
+ * Overrides real gethostbyname2_r
  */
 int
 proxy_gethostbyname2_r(const char *name, int af,
@@ -212,6 +226,122 @@ static int my_inet_aton(const char *node, struct addrinfo_data* space)
 	return ret;
 }
 
+void dnscache_ares_callback(void* arg, int status, int timeouts, struct hostent* host)
+{
+    struct ares_ctx *ctx = (struct ares_ctx *)arg;
+
+    ARES_STATUS_SET_COMPLETED(ctx);
+
+    if (status != ARES_SUCCESS) {
+        //fprintf(stderr, "Error: %s\n", ares_strerror(status));
+        switch (status) {
+        case ARES_ENOTFOUND:
+            ARES_STATUS_SET_RET(ctx, HOST_NOT_FOUND);
+            break;
+        case ARES_ENODATA:
+            ARES_STATUS_SET_RET(ctx, NO_DATA);
+            break;
+        default:
+            ARES_STATUS_SET_RET(ctx, NO_RECOVERY);
+            break;
+        }
+        return;
+    }
+
+    // char ip[INET6_ADDRSTRLEN];
+    int idx;
+    for (idx = 0; host->h_addr_list[idx]; idx++) {
+        //inet_ntop(host->h_addrtype, host->h_addr_list[idx], ip, sizeof(ip));
+        //printf("dns result: %s\n", ip);
+        *ctx->addr = *(struct in_addr *)host->h_addr_list[idx];
+        ARES_STATUS_SET_RET(ctx, 0);
+        return;
+    }
+
+    ARES_STATUS_SET_RET(ctx, TRY_AGAIN);
+}
+
+int my_gethostbyname_ares(const char *host, struct in_addr *addr) {
+    ares_channel channel;
+    int status;
+    struct ares_ctx ctx;
+    struct ares_options options;
+    int optmask = ARES_OPT_TIMEOUTMS;
+
+    memset(&ctx, 0, sizeof(struct ares_ctx));
+    ctx.addr = addr;
+    options.timeout = DNSCACHEG(dns_timeout_ms);
+
+    status = ares_init_options(&channel, &options, optmask);
+    if (status != ARES_SUCCESS) {
+        //fprintf(stderr, "ares_init_options: %s\n", ares_strerror(status));
+        return NO_RECOVERY;
+    }
+    ares_gethostbyname(channel, host, AF_INET, dnscache_ares_callback, &ctx);
+
+    struct pollfd fds[ARES_GETSOCK_MAXNUM];
+    int           socks[ARES_GETSOCK_MAXNUM];
+    int nfds, num;
+    int timeout;
+    int i;
+    int bitmask;
+
+    while (!ARES_STATUS_IS_COMPLETED(&ctx)) {
+        num = 0;
+        bitmask = ares_getsock(channel, socks, ARES_GETSOCK_MAXNUM);
+        for (i = 0; i < ARES_GETSOCK_MAXNUM; i++) {
+            fds[i].events  = 0;
+            fds[i].revents = 0;
+            if (ARES_GETSOCK_READABLE(bitmask, i)) {
+                fds[i].fd = socks[i];
+                fds[i].events |= POLLIN;
+                fds[i].events |= POLLPRI;
+            }
+            if (ARES_GETSOCK_WRITABLE(bitmask, i)) {
+                fds[i].fd = socks[i];
+                fds[i].events |= POLLOUT;
+            }
+            if (fds[i].events != 0) {
+                num++;
+            } else {
+                break;
+            }
+        }
+
+        if (num == 0)
+            break;
+
+        struct timeval *tvp, tv;
+        tvp = ares_timeout(channel, NULL, &tv);
+        timeout = (tvp->tv_sec * 1000) + (tvp->tv_usec / 1000);
+        //printf("timeout: %dms\n", timeout);
+
+        nfds = poll(fds, num, timeout);
+        if (nfds <= 0) {
+            if (nfds == 0) {
+                //fprintf(stderr, "ares dns resolve error: timeout\n");
+            } else {
+                fprintf(stderr, "ares dns resolve error: %s\n", ares_strerror(errno));
+            }
+            break;
+        }
+
+        for (i = 0; i < num; i++) {
+            ares_process_fd(channel,
+                            fds[i].revents & (POLLIN | POLLPRI) ? fds[i].fd : ARES_SOCKET_BAD,
+                            fds[i].revents & POLLOUT ? fds[i].fd : ARES_SOCKET_BAD);
+        }
+    }
+
+    ares_destroy(channel);
+
+    if (!ARES_STATUS_IS_COMPLETED(&ctx)) {
+        return NO_RECOVERY;
+    }
+
+    return ARES_STATUS_GET_RET(&ctx);
+}
+
 int my_gethostbyname(const char *host, struct in_addr *addr) {
     struct hostent he, *result;
     int herr, ret, bufsz = 512;
@@ -221,15 +351,16 @@ int my_gethostbyname(const char *host, struct in_addr *addr) {
         if (new_buff == NULL) {
             free(buff);
             return ENOMEM;
-        }   
+        }
         buff = new_buff;
-        ret = gethostbyname_r(host, &he, buff, bufsz, &result, &herr);
+        ret = gethostbyname2_r(host, AF_INET, &he, buff, bufsz, &result, &herr);
+        //printf("gethostbyname2_r ret: %d herr: %d\n", ret, herr);
         bufsz *= 2;
     } while (ret == ERANGE);
 
-    if (ret == 0 && result != NULL) 
+    if (ret == 0 && result != NULL)
         *addr = *(struct in_addr *)he.h_addr;
-    else if (result != &he) 
+    else if (result != &he)
         ret = herr;
     free(buff);
     return ret;
@@ -274,7 +405,8 @@ int proxy_getaddrinfo(const char *node, const char *service, const struct addrin
 			//	memcpy(addr_list_cache, *(hp->h_addr_list), sizeof(in_addr_t));
 			addr = malloc(sizeof(struct in_addr));
 			if (!addr) goto err1;
-			err = my_gethostbyname(node, addr);
+			err = my_gethostbyname_ares(node, addr);
+			//printf("gethostbyname error: %d\n", err);
 			if (!err) {
 				memcpy(&((struct sockaddr_in *) &space->sockaddr_space)->sin_addr,
 						addr, sizeof(struct in_addr));
@@ -359,6 +491,11 @@ void dnscache_init() {
         perror("Failed to init dnscache");
     }
 
+    int status = ares_library_init(ARES_LIB_INIT_ALL);
+    if (status != ARES_SUCCESS) {
+        fprintf(stderr, "ares_library_init: %s\n", ares_strerror(status));
+    }
+
     //patch("getaddrinfo", &proxy_getaddrinfo);
     //patch("freeaddrinfo", &proxy_freeaddrinfo);
 
@@ -376,6 +513,8 @@ void dnscache_deinit() {
     subhook_free(getaddrinfo_hook);
     subhook_remove(freeaddrinfo_hook);
     subhook_free(freeaddrinfo_hook);
+
+    ares_library_cleanup();
 
     lruc_free(cache);
     cache = NULL;

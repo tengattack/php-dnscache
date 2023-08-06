@@ -8,6 +8,7 @@
 #define PHP_DNSCACHE_VERSION "0.0.3"
 
 ZEND_BEGIN_MODULE_GLOBALS(dnscache)
+    int dns_timeout_ms;
     int cache_size;
     //int avg_size;
     int ttl;
